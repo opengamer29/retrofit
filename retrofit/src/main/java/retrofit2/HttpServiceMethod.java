@@ -66,25 +66,25 @@ abstract class HttpServiceMethod<ResponseT, ReturnT> extends ServiceMethod<Retur
       adapterType = method.getGenericReturnType();
     }
 
+    if (isKotlinSuspendFunction) {
+      SuspendCallAdapter<ResponseT, ReturnT> suspendCallAdapter = createSuspendCallAdapter(retrofit, adapterType, annotations);
+      if (suspendCallAdapter != null) {
+        Type responseType = suspendCallAdapter.responseType();
+        validateResponseType(method, requestFactory, responseType);
+
+        Converter<ResponseBody, ResponseT> responseConverter =
+          createResponseConverter(retrofit, method, responseType);
+
+        //noinspection unchecked Kotlin compiler guarantees ReturnT to be Object.
+        return (HttpServiceMethod<ResponseT, ReturnT>)
+          new DirectSuspendAdapter<>(requestFactory, retrofit.callFactory, responseConverter, suspendCallAdapter);
+      }
+    }
+
     CallAdapter<ResponseT, ReturnT> callAdapter =
         createCallAdapter(retrofit, method, adapterType, annotations);
     Type responseType = callAdapter.responseType();
-    if (responseType == okhttp3.Response.class) {
-      throw methodError(
-          method,
-          "'"
-              + getRawType(responseType).getName()
-              + "' is not a valid response body type. Did you mean ResponseBody?");
-    }
-    if (responseType == Response.class) {
-      throw methodError(method, "Response must include generic type (e.g., Response<String>)");
-    }
-    // TODO support Unit for Kotlin?
-    if (requestFactory.httpMethod.equals("HEAD")
-        && !Void.class.equals(responseType)
-        && !Utils.isUnit(responseType)) {
-      throw methodError(method, "HEAD method must use Void or Unit as response type.");
-    }
+    validateResponseType(method, requestFactory, responseType);
 
     Converter<ResponseBody, ResponseT> responseConverter =
         createResponseConverter(retrofit, method, responseType);
@@ -113,6 +113,25 @@ abstract class HttpServiceMethod<ResponseT, ReturnT> extends ServiceMethod<Retur
     }
   }
 
+  private static void validateResponseType(Method method, RequestFactory requestFactory, Type responseType) {
+    if (responseType == okhttp3.Response.class) {
+      throw methodError(
+        method,
+          "'"
+              + getRawType(responseType).getName()
+              + "' is not a valid response body type. Did you mean ResponseBody?");
+    }
+    if (responseType == Response.class) {
+      throw methodError(method, "Response must include generic type (e.g., Response<String>)");
+    }
+    // TODO support Unit for Kotlin?
+    if (requestFactory.httpMethod.equals("HEAD")
+        && !Void.class.equals(responseType)
+        && !Utils.isUnit(responseType)) {
+      throw methodError(method, "HEAD method must use Void or Unit as response type.");
+    }
+  }
+
   private static <ResponseT, ReturnT> CallAdapter<ResponseT, ReturnT> createCallAdapter(
       Retrofit retrofit, Method method, Type returnType, Annotation[] annotations) {
     try {
@@ -121,6 +140,13 @@ abstract class HttpServiceMethod<ResponseT, ReturnT> extends ServiceMethod<Retur
     } catch (RuntimeException e) { // Wide exception range because factories are user code.
       throw methodError(method, e, "Unable to create call adapter for %s", returnType);
     }
+  }
+
+  @Nullable
+  private static <ResponseT, ReturnT> SuspendCallAdapter<ResponseT, ReturnT> createSuspendCallAdapter(
+    Retrofit retrofit, Type returnType, Annotation[] annotations) {
+    //noinspection unchecked
+    return (SuspendCallAdapter<ResponseT, ReturnT>) retrofit.suspendCallAdapter(returnType, annotations);
   }
 
   private static <ResponseT> Converter<ResponseBody, ResponseT> createResponseConverter(
@@ -243,6 +269,33 @@ abstract class HttpServiceMethod<ResponseT, ReturnT> extends ServiceMethod<Retur
         } else {
           return KotlinExtensions.await(call, continuation);
         }
+      } catch (Exception e) {
+        return KotlinExtensions.suspendAndThrow(e, continuation);
+      }
+    }
+  }
+
+  static final class DirectSuspendAdapter<ResponseT, ReturnT> extends HttpServiceMethod<ResponseT, Object> {
+    private final SuspendCallAdapter<ResponseT, ReturnT> suspendCallAdapter;
+
+    DirectSuspendAdapter(
+      RequestFactory requestFactory,
+      okhttp3.Call.Factory callFactory,
+      Converter<ResponseBody, ResponseT> responseConverter,
+      SuspendCallAdapter<ResponseT,  ReturnT> callAdapter) {
+      super(requestFactory, callFactory, responseConverter);
+      this.suspendCallAdapter = callAdapter;
+    }
+
+    @Nullable
+    @Override
+    protected Object adapt(Call<ResponseT> call, Object[] args) {
+      //noinspection unchecked Checked by reflection inside RequestFactory.
+      Continuation<ReturnT> continuation =
+        (Continuation<ReturnT>) args[args.length - 1];
+
+      try {
+        return suspendCallAdapter.adapt(call, continuation);
       } catch (Exception e) {
         return KotlinExtensions.suspendAndThrow(e, continuation);
       }

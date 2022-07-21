@@ -71,6 +71,7 @@ public final class Retrofit {
   final List<Converter.Factory> converterFactories;
   final int defaultConverterFactoriesSize;
   final List<CallAdapter.Factory> callAdapterFactories;
+  final List<SuspendCallAdapter.Factory> suspendCallAdapterFactories;
   final int defaultCallAdapterFactoriesSize;
   final @Nullable Executor callbackExecutor;
   final boolean validateEagerly;
@@ -81,6 +82,7 @@ public final class Retrofit {
       List<Converter.Factory> converterFactories,
       int defaultConverterFactoriesSize,
       List<CallAdapter.Factory> callAdapterFactories,
+      List<SuspendCallAdapter.Factory> suspendCallAdapterFactories,
       int defaultCallAdapterFactoriesSize,
       @Nullable Executor callbackExecutor,
       boolean validateEagerly) {
@@ -89,6 +91,7 @@ public final class Retrofit {
     this.converterFactories = converterFactories; // Copy+unmodifiable at call site.
     this.defaultConverterFactoriesSize = defaultConverterFactoriesSize;
     this.callAdapterFactories = callAdapterFactories; // Copy+unmodifiable at call site.
+    this.suspendCallAdapterFactories = suspendCallAdapterFactories; // Copy+unmodifiable at call site.
     this.defaultCallAdapterFactoriesSize = defaultCallAdapterFactoriesSize;
     this.callbackExecutor = callbackExecutor;
     this.validateEagerly = validateEagerly;
@@ -234,6 +237,14 @@ public final class Retrofit {
   }
 
   /**
+   * Returns a list of the factories tried when creating a {@linkplain #callAdapter(Type,
+   * Annotation[])} call adapter}.
+   */
+  public List<SuspendCallAdapter.Factory> suspendCallAdapterFactories() {
+    return suspendCallAdapterFactories;
+  }
+
+  /**
    * Returns the {@link CallAdapter} for {@code returnType} from the available {@linkplain
    * #callAdapterFactories() factories}.
    *
@@ -276,6 +287,35 @@ public final class Retrofit {
       builder.append("\n   * ").append(callAdapterFactories.get(i).getClass().getName());
     }
     throw new IllegalArgumentException(builder.toString());
+  }
+
+  /**
+   * Returns the {@link CallAdapter} for {@code returnType} from the available {@linkplain
+   * #suspendCallAdapterFactories() factories}.
+   */
+  @Nullable
+  public SuspendCallAdapter<?, ?> suspendCallAdapter(Type returnType, Annotation[] annotations) {
+    return nextSuspendCallAdapter(null, returnType, annotations);
+  }
+
+  /**
+   * Returns the {@link SuspendCallAdapter} for {@code returnType} from the available {@linkplain
+   * #callAdapterFactories() factories} except {@code skipPast}.
+   */
+  @Nullable
+  public SuspendCallAdapter<?, ?> nextSuspendCallAdapter(
+    @Nullable SuspendCallAdapter.Factory skipPast, Type returnType, Annotation[] annotations) {
+    Objects.requireNonNull(returnType, "returnType == null");
+    Objects.requireNonNull(annotations, "annotations == null");
+
+    int start = suspendCallAdapterFactories.indexOf(skipPast) + 1;
+    for (int i = start, count = suspendCallAdapterFactories.size(); i < count; i++) {
+      SuspendCallAdapter<?, ?> adapter = suspendCallAdapterFactories.get(i).get(returnType, annotations, this);
+      if (adapter != null) {
+        return adapter;
+      }
+    }
+    return null;
   }
 
   /**
@@ -435,6 +475,7 @@ public final class Retrofit {
     private @Nullable HttpUrl baseUrl;
     private final List<Converter.Factory> converterFactories = new ArrayList<>();
     private final List<CallAdapter.Factory> callAdapterFactories = new ArrayList<>();
+    private final List<SuspendCallAdapter.Factory> suspendCallAdapterFactories = new ArrayList<>();
     private @Nullable Executor callbackExecutor;
     private boolean validateEagerly;
 
@@ -580,6 +621,15 @@ public final class Retrofit {
     }
 
     /**
+     * Add a suspend call adapter factory for supporting service method return types other than {@link
+     * Call}.
+     */
+    public Builder addSuspendCallAdapterFactory(SuspendCallAdapter.Factory factory) {
+      suspendCallAdapterFactories.add(Objects.requireNonNull(factory, "factory == null"));
+      return this;
+    }
+
+    /**
      * The executor on which {@link Callback} methods are invoked when returning {@link Call} from
      * your service method.
      *
@@ -639,6 +689,9 @@ public final class Retrofit {
           platform.createDefaultCallAdapterFactories(callbackExecutor);
       callAdapterFactories.addAll(defaultCallAdapterFactories);
 
+      // Make a defensive copy of the adapters and add the default Call adapter.
+      List<SuspendCallAdapter.Factory> suspendCallAdapterFactories = new ArrayList<>(this.suspendCallAdapterFactories);
+
       // Make a defensive copy of the converters.
       List<? extends Converter.Factory> defaultConverterFactories =
           platform.createDefaultConverterFactories();
@@ -658,6 +711,7 @@ public final class Retrofit {
           unmodifiableList(converterFactories),
           defaultConverterFactoriesSize,
           unmodifiableList(callAdapterFactories),
+          unmodifiableList(suspendCallAdapterFactories),
           defaultCallAdapterFactories.size(),
           callbackExecutor,
           validateEagerly);
